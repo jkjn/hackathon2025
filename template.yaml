@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: CVE and KEV Scraper Lambda Function for Bedrock Knowledge Base
+
+Parameters:
+  KnowledgeBaseId:
+    Type: String
+    Description: ID of the Bedrock Knowledge Base
+    Default: ''
+
+  DataSourceId:
+    Type: String
+    Description: ID of the Data Source within the Knowledge Base
+    Default: ''
+
+  S3BucketName:
+    Type: String
+    Description: S3 bucket name for storing vulnerability data
+    Default: ''
+
+  S3Prefix:
+    Type: String
+    Description: S3 prefix for organizing vulnerability documents
+    Default: 'vulnerability-data'
+
+  ScheduleExpression:
+    Type: String
+    Description: CloudWatch Events schedule expression (e.g., 'rate(1 day)' or 'cron(0 2 * * ? *)')
+    Default: 'rate(1 day)'
+
+  NVDApiKey:
+    Type: String
+    Description: Optional NVD API key for higher rate limits
+    Default: ''
+    NoEcho: true
+
+Conditions:
+  HasNVDApiKey: !Not [!Equals [!Ref NVDApiKey, '']]
+
+Globals:
+  Function:
+    Timeout: 900  # 15 minutes
+    MemorySize: 512
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseId
+        DATA_SOURCE_ID: !Ref DataSourceId
+        S3_BUCKET: !Ref S3BucketName
+        S3_PREFIX: !Ref S3Prefix
+
+Resources:
+  # S3 Bucket for storing vulnerability data
+  VulnerabilityDataBucket:
+    Type: AWS::S3::Bucket
+    Condition: HasNVDApiKey  # Only create if bucket name not provided
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-vulnerability-data'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            ExpirationInDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Lambda Function
+  CVEKEVScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-cve-kev-scraper'
+      CodeUri: .
+      Handler: lambda_function.lambda_handler
+      Description: Scrapes CVEs and KEVs and loads them into Bedrock Knowledge Base
+      Environment:
+        Variables:
+          NVD_API_KEY: !If [HasNVDApiKey, !Ref NVDApiKey, '']
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !If
+              - HasNVDApiKey
+              - !Ref VulnerabilityDataBucket
+              - !Ref S3BucketName
+        - Statement:
+          - Sid: BedrockKnowledgeBaseAccess
+            Effect: Allow
+            Action:
+              - bedrock:StartIngestionJob
+              - bedrock:GetIngestionJob
+              - bedrock:ListIngestionJobs
+            Resource: !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}'
+        - Statement:
+          - Sid: BedrockAgentAccess
+            Effect: Allow
+            Action:
+              - bedrock-agent:StartIngestionJob
+              - bedrock-agent:GetIngestionJob
+              - bedrock-agent:ListIngestionJobs
+            Resource:
+              - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}'
+              - !Sub 'arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${KnowledgeBaseId}/data-source/${DataSourceId}'
+      Events:
+        ScheduledExecution:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref ScheduleExpression
+            Description: Regularly scrape CVEs and KEVs
+            Enabled: true
+
+  # CloudWatch Log Group
+  CVEKEVScraperLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${CVEKEVScraperFunction}'
+      RetentionInDays: 30
+
+  # CloudWatch Alarm for Lambda Errors
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-lambda-errors'
+      AlarmDescription: Alert when Lambda function has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref CVEKEVScraperFunction
+      TreatMissingData: notBreaching
+
+Outputs:
+  CVEKEVScraperFunctionArn:
+    Description: ARN of the CVE/KEV scraper Lambda function
+    Value: !GetAtt CVEKEVScraperFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-function-arn'
+
+  CVEKEVScraperFunctionName:
+    Description: Name of the CVE/KEV scraper Lambda function
+    Value: !Ref CVEKEVScraperFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-function-name'
+
+  S3BucketName:
+    Description: S3 bucket for vulnerability data
+    Value: !If
+      - HasNVDApiKey
+      - !Ref VulnerabilityDataBucket
+      - !Ref S3BucketName
+    Export:
+      Name: !Sub '${AWS::StackName}-s3-bucket'
+
+  LogGroupName:
+    Description: CloudWatch Log Group name
+    Value: !Ref CVEKEVScraperLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-log-group'
