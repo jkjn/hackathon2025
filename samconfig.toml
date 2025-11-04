@@ -1,0 +1,78 @@
+version = 0.1
+
+[default]
+[default.global.parameters]
+stack_name = "cve-kev-scraper-team2"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.validate.parameters]
+lint = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+resolve_s3 = false
+s3_bucket = "eahackathon2025-team2-rag"
+s3_prefix = "sam-deployments"
+region = "us-east-2"
+parameter_overrides = [
+    "KnowledgeBaseId=4FGDLF4WDO",
+    "DataSourceId=KM5BQWXYTQ",
+    "S3BucketName=eahackathon2025-team2-rag",
+    "S3Prefix=vulnerability-data",
+    "ScheduleExpression=\"rate(1 day)\"",
+    "NVDApiKey=\"\""
+]
+fail_on_empty_changeset = false
+
+[default.sync.parameters]
+watch = true
+
+[default.local_start_api.parameters]
+warm_containers = "EAGER"
+
+[default.local_start_lambda.parameters]
+warm_containers = "EAGER"
+
+# Development environment configuration
+[dev]
+[dev.deploy.parameters]
+stack_name = "cve-kev-scraper-team2-dev"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+resolve_s3 = false
+s3_bucket = "eahackathon2025-team2-rag"
+s3_prefix = "sam-deployments/dev"
+region = "us-east-2"
+parameter_overrides = [
+    "KnowledgeBaseId=4FGDLF4WDO",
+    "DataSourceId=KM5BQWXYTQ",
+    "S3BucketName=eahackathon2025-team2-rag",
+    "S3Prefix=vulnerability-data/dev",
+    "ScheduleExpression=\"rate(1 day)\"",
+    "NVDApiKey=\"\""
+]
+fail_on_empty_changeset = false
+
+# Production environment configuration
+[prod]
+[prod.deploy.parameters]
+stack_name = "cve-kev-scraper-team2-prod"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = false
+s3_bucket = "eahackathon2025-team2-rag"
+s3_prefix = "sam-deployments/prod"
+region = "us-east-2"
+parameter_overrides = [
+    "KnowledgeBaseId=4FGDLF4WDO",
+    "DataSourceId=KM5BQWXYTQ",
+    "S3BucketName=eahackathon2025-team2-rag",
+    "S3Prefix=vulnerability-data/prod",
+    "ScheduleExpression=\"rate(1 day)\"",
+    "NVDApiKey=\"\""
+]
+fail_on_empty_changeset = false

@@ -53,6 +53,23 @@ This Lambda function automatically scrapes Common Vulnerabilities and Exposures 
 5. **Bedrock Knowledge Base** already created
 6. **NVD API Key** (optional, for higher rate limits) - Get one at [NVD API](https://nvd.nist.gov/developers/request-an-api-key)
 
+## Deployment Options
+
+### Option 1: GitLab CI/CD (Recommended for Teams)
+
+The project includes a complete GitLab CI/CD pipeline for automated deployments.
+
+**See [GITLAB_CICD_SETUP.md](GITLAB_CICD_SETUP.md) for detailed setup instructions.**
+
+Quick start:
+1. Configure GitLab CI/CD variables (AWS credentials)
+2. Push to feature branch → auto-deploys to dev
+3. Merge to main → manual approval for production
+
+### Option 2: Manual Deployment with SAM
+
+Follow the steps below for manual deployment using AWS SAM CLI.
+
 ## Setup
 
 ### 1. Create Bedrock Knowledge Base

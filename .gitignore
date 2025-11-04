@@ -28,7 +28,7 @@ ENV/
 
 # AWS SAM
 .aws-sam/
-samconfig.toml
+# samconfig.toml - Kept in repo for team CI/CD configuration
 
 # IDE
 .vscode/

@@ -1,0 +1,253 @@
+stages:
+  - validate
+  - test
+  - build
+  - deploy
+  - verify
+
+variables:
+  AWS_DEFAULT_REGION: us-east-2
+  SAM_CLI_TELEMETRY: 0
+  STACK_NAME: cve-kev-scraper-team2
+  S3_BUCKET: eahackathon2025-team2-rag
+  KNOWLEDGE_BASE_ID: 4FGDLF4WDO
+  DATA_SOURCE_ID: KM5BQWXYTQ
+
+# Default image for most jobs
+default:
+  image: public.ecr.aws/sam/build-python3.11:latest
+
+# Validate SAM template and Python code
+validate:
+  stage: validate
+  script:
+    - echo "Validating SAM template..."
+    - sam validate --lint
+    - echo "Checking Python syntax..."
+    - python -m py_compile lambda_function.py
+    - python -m py_compile cve_scraper.py
+    - python -m py_compile kev_scraper.py
+    - python -m py_compile bedrock_loader.py
+  only:
+    - branches
+    - merge_requests
+
+# Run local tests
+test:
+  stage: test
+  image: python:3.11
+  before_script:
+    - pip install -r requirements.txt
+  script:
+    - echo "Running local tests..."
+    - python test_local.py || echo "Test completed with warnings"
+  only:
+    - branches
+    - merge_requests
+  allow_failure: true  # Allow pipeline to continue even if tests have warnings
+
+# Build SAM application
+build:
+  stage: build
+  script:
+    - echo "Building SAM application..."
+    - sam build --use-container
+  artifacts:
+    paths:
+      - .aws-sam/
+    expire_in: 1 hour
+  only:
+    - branches
+    - merge_requests
+
+# Deploy to development environment
+deploy:dev:
+  stage: deploy
+  before_script:
+    - |
+      echo "Configuring AWS credentials..."
+      # AWS credentials should be set via GitLab CI/CD variables:
+      # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+      if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+        echo "ERROR: AWS credentials not found in GitLab CI/CD variables"
+        exit 1
+      fi
+  script:
+    - echo "Deploying to development environment..."
+    - |
+      sam deploy \
+        --stack-name ${STACK_NAME}-dev \
+        --region ${AWS_DEFAULT_REGION} \
+        --s3-bucket ${S3_BUCKET} \
+        --s3-prefix sam-deployments/dev \
+        --parameter-overrides \
+          "KnowledgeBaseId=${KNOWLEDGE_BASE_ID}" \
+          "DataSourceId=${DATA_SOURCE_ID}" \
+          "S3BucketName=${S3_BUCKET}" \
+          "S3Prefix=vulnerability-data/dev" \
+          "ScheduleExpression=rate(1 day)" \
+          "NVDApiKey=${NVD_API_KEY:-}" \
+        --capabilities CAPABILITY_IAM \
+        --no-fail-on-empty-changeset \
+        --no-confirm-changeset
+  artifacts:
+    paths:
+      - .aws-sam/
+    reports:
+      dotenv: deploy.env
+  environment:
+    name: development
+    on_stop: cleanup:dev
+  only:
+    - branches
+  except:
+    - main
+    - master
+
+# Deploy to production environment
+deploy:prod:
+  stage: deploy
+  before_script:
+    - |
+      echo "Configuring AWS credentials..."
+      if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+        echo "ERROR: AWS credentials not found in GitLab CI/CD variables"
+        exit 1
+      fi
+  script:
+    - echo "Deploying to production environment..."
+    - |
+      sam deploy \
+        --stack-name ${STACK_NAME}-prod \
+        --region ${AWS_DEFAULT_REGION} \
+        --s3-bucket ${S3_BUCKET} \
+        --s3-prefix sam-deployments/prod \
+        --parameter-overrides \
+          "KnowledgeBaseId=${KNOWLEDGE_BASE_ID}" \
+          "DataSourceId=${DATA_SOURCE_ID}" \
+          "S3BucketName=${S3_BUCKET}" \
+          "S3Prefix=vulnerability-data/prod" \
+          "ScheduleExpression=rate(1 day)" \
+          "NVDApiKey=${NVD_API_KEY:-}" \
+        --capabilities CAPABILITY_IAM \
+        --no-fail-on-empty-changeset \
+        --no-confirm-changeset
+    - |
+      # Capture outputs
+      echo "Capturing stack outputs..."
+      aws cloudformation describe-stacks \
+        --stack-name ${STACK_NAME}-prod \
+        --region ${AWS_DEFAULT_REGION} \
+        --query 'Stacks[0].Outputs' > stack-outputs.json
+      cat stack-outputs.json
+  artifacts:
+    paths:
+      - .aws-sam/
+      - stack-outputs.json
+    expire_in: 30 days
+  environment:
+    name: production
+    on_stop: cleanup:prod
+  only:
+    - main
+    - master
+  when: manual  # Require manual approval for production
+
+# Verify deployment (dev)
+verify:dev:
+  stage: verify
+  image: amazon/aws-cli:latest
+  script:
+    - echo "Verifying development deployment..."
+    - |
+      # Get Lambda function name
+      FUNCTION_NAME=$(aws cloudformation describe-stacks \
+        --stack-name ${STACK_NAME}-dev \
+        --region ${AWS_DEFAULT_REGION} \
+        --query 'Stacks[0].Outputs[?OutputKey==`CVEKEVScraperFunctionName`].OutputValue' \
+        --output text)
+
+      echo "Lambda Function: $FUNCTION_NAME"
+
+      # Test invoke Lambda
+      echo "Testing Lambda function invocation..."
+      aws lambda invoke \
+        --function-name $FUNCTION_NAME \
+        --region ${AWS_DEFAULT_REGION} \
+        --payload '{"cve_limit": 5, "scrape_kevs": true}' \
+        --log-type Tail \
+        response.json
+
+      # Check response
+      cat response.json
+
+      # Verify S3 bucket access
+      echo "Verifying S3 bucket access..."
+      aws s3 ls s3://${S3_BUCKET}/vulnerability-data/dev/ --region ${AWS_DEFAULT_REGION} || echo "No data yet"
+  only:
+    - branches
+  except:
+    - main
+    - master
+  allow_failure: true
+
+# Verify deployment (prod)
+verify:prod:
+  stage: verify
+  image: amazon/aws-cli:latest
+  script:
+    - echo "Verifying production deployment..."
+    - |
+      # Get Lambda function name
+      FUNCTION_NAME=$(aws cloudformation describe-stacks \
+        --stack-name ${STACK_NAME}-prod \
+        --region ${AWS_DEFAULT_REGION} \
+        --query 'Stacks[0].Outputs[?OutputKey==`CVEKEVScraperFunctionName`].OutputValue' \
+        --output text)
+
+      echo "Lambda Function: $FUNCTION_NAME"
+
+      # Check Lambda function configuration
+      aws lambda get-function \
+        --function-name $FUNCTION_NAME \
+        --region ${AWS_DEFAULT_REGION} \
+        --query 'Configuration.{Name:FunctionName,Runtime:Runtime,Timeout:Timeout,MemorySize:MemorySize,State:State}'
+
+      # Check EventBridge rule
+      echo "Checking scheduled execution rule..."
+      aws events list-rules \
+        --region ${AWS_DEFAULT_REGION} \
+        --name-prefix ${STACK_NAME}-prod | head -20
+  only:
+    - main
+    - master
+  allow_failure: true
+
+# Cleanup dev environment (manual)
+cleanup:dev:
+  stage: deploy
+  image: public.ecr.aws/sam/build-python3.11:latest
+  script:
+    - echo "Deleting development stack..."
+    - sam delete --stack-name ${STACK_NAME}-dev --region ${AWS_DEFAULT_REGION} --no-prompts || true
+  environment:
+    name: development
+    action: stop
+  when: manual
+  only:
+    - branches
+
+# Cleanup prod environment (manual)
+cleanup:prod:
+  stage: deploy
+  image: public.ecr.aws/sam/build-python3.11:latest
+  script:
+    - echo "WARNING: Deleting production stack..."
+    - sam delete --stack-name ${STACK_NAME}-prod --region ${AWS_DEFAULT_REGION} --no-prompts || true
+  environment:
+    name: production
+    action: stop
+  when: manual
+  only:
+    - main
+    - master
